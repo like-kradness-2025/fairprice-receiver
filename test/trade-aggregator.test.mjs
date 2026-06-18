@@ -2,28 +2,7 @@
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert';
-import { TradeAggregator, classifyTradeNotional } from '../lib/trade-aggregator.mjs';
-
-describe('classifyTradeNotional', () => {
-  it('classifies small (< $1k)', () => {
-    assert.strictEqual(classifyTradeNotional(65000, 0.01), 'small');  // $650
-  });
-  it('classifies medium ($1k-$10k)', () => {
-    assert.strictEqual(classifyTradeNotional(65000, 0.1), 'medium');  // $6,500
-  });
-  it('classifies large ($10k-$100k)', () => {
-    assert.strictEqual(classifyTradeNotional(65000, 0.5), 'large');   // $32,500
-  });
-  it('classifies whale (>= $100k)', () => {
-    assert.strictEqual(classifyTradeNotional(65000, 2), 'whale');     // $130,000
-  });
-  it('classifies boundary $1,000 as medium', () => {
-    assert.strictEqual(classifyTradeNotional(1, 1000), 'medium');
-  });
-  it('classifies boundary $100,000 as whale', () => {
-    assert.strictEqual(classifyTradeNotional(1, 100000), 'whale');
-  });
-});
+import { TradeAggregator } from '../lib/trade-aggregator.mjs';
 
 describe('TradeAggregator', () => {
   describe('constructor', () => {
@@ -46,7 +25,7 @@ describe('TradeAggregator', () => {
       assert.strictEqual(agg.flushIfDue(1500), null);
     });
 
-    it('should aggregate trades within window and classify sizes', () => {
+    it('should aggregate trades within window', () => {
       const agg = new TradeAggregator('test', 1000);
       agg.addTrade({ market: 'test', price: 100, qty: 1, side: 'buy', ts: 1000 });
       agg.addTrade({ market: 'test', price: 102, qty: 2, side: 'sell', ts: 1100 });
@@ -66,15 +45,6 @@ describe('TradeAggregator', () => {
       assert.strictEqual(result.trade_count, 3);
       assert.strictEqual(result.buy_count, 2);
       assert.strictEqual(result.sell_count, 1);
-      // Size classification (all notional < $1k → small)
-      assert.strictEqual(result.small_count, 3);
-      assert.strictEqual(result.medium_count, 0);
-      assert.strictEqual(result.large_count, 0);
-      assert.strictEqual(result.whale_count, 0);
-      assert.strictEqual(result.small_volume, 4.5);
-      assert.strictEqual(result.medium_volume, 0);
-      assert.strictEqual(result.large_volume, 0);
-      assert.strictEqual(result.whale_volume, 0);
       // VWAP = (100*1 + 102*2 + 101*1.5) / (1+2+1.5) = (100 + 204 + 151.5) / 4.5 = 455.5 / 4.5 = 101.22
       assert.strictEqual(result.vwap, 101.22);
     });
