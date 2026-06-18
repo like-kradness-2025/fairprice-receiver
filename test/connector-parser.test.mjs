@@ -443,6 +443,99 @@ describe('OkxConnector parser', () => {
   });
 });
 
+describe('OkxConnector REST fallback seqId', () => {
+  it('should use data[0].seqId when REST fallback activates', async () => {
+    const conn = new OkxConnector({});
+    conn._ws = null;
+
+    // Mock WS snapshot timeout to trigger REST fallback
+    conn._waitForWsSnapshot = async () => {
+      const err = new Error('timeout');
+      err.code = 'WS_SNAPSHOT_TIMEOUT';
+      throw err;
+    };
+
+    // Mock REST snapshot with data[0].seqId
+    conn._fetchSnapshot = async () => ({
+      code: '0',
+      data: [{
+        asks: [['65001.0', '0.8', '0', '1']],
+        bids: [['65000.0', '1.5', '0', '1']],
+        seqId: 500,  // seqId inside data[0]
+      }],
+    });
+
+    // Stub notification methods
+    conn._notifyWsSnapshotReceived = () => {};
+    conn._finalizeWsSnapshotSync = () => {};
+
+    await conn._syncBook();
+
+    // Book should be populated with snapshot data
+    assert.strictEqual(conn.book.getBestBid(), '65000.0');
+    assert.strictEqual(conn.book.getBestAsk(), '65001.0');
+    // seqId should be 500 (from data[0].seqId, not snapshot.seqId)
+    assert.strictEqual(conn.book._lastSeq, 500);
+  });
+
+  it('should fall back to snapshot.seqId when data[0].seqId is missing', async () => {
+    const conn = new OkxConnector({});
+    conn._ws = null;
+
+    conn._waitForWsSnapshot = async () => {
+      const err = new Error('timeout');
+      err.code = 'WS_SNAPSHOT_TIMEOUT';
+      throw err;
+    };
+
+    // REST snapshot without data[0].seqId, but with snapshot.seqId
+    conn._fetchSnapshot = async () => ({
+      code: '0',
+      msg: '',
+      seqId: 999,
+      data: [{
+        asks: [['65001.0', '0.8', '0', '1']],
+        bids: [['65000.0', '1.5', '0', '1']],
+      }],
+    });
+
+    conn._notifyWsSnapshotReceived = () => {};
+    conn._finalizeWsSnapshotSync = () => {};
+
+    await conn._syncBook();
+
+    assert.strictEqual(conn.book.getBestBid(), '65000.0');
+    assert.strictEqual(conn.book._lastSeq, 999);
+  });
+
+  it('should use 0 as last resort when no seqId available', async () => {
+    const conn = new OkxConnector({});
+    conn._ws = null;
+
+    conn._waitForWsSnapshot = async () => {
+      const err = new Error('timeout');
+      err.code = 'WS_SNAPSHOT_TIMEOUT';
+      throw err;
+    };
+
+    conn._fetchSnapshot = async () => ({
+      code: '0',
+      data: [{
+        asks: [['65001.0', '0.8', '0', '1']],
+        bids: [['65000.0', '1.5', '0', '1']],
+      }],
+    });
+
+    conn._notifyWsSnapshotReceived = () => {};
+    conn._finalizeWsSnapshotSync = () => {};
+
+    await conn._syncBook();
+
+    assert.strictEqual(conn.book.getBestBid(), '65000.0');
+    assert.strictEqual(conn.book._lastSeq, 0);
+  });
+});
+
 describe('CoinbaseConnector parser', () => {
   function createCoinbaseConn() {
     const conn = new CoinbaseConnector({});
