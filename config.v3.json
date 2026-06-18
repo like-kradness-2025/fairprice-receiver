@@ -1,0 +1,195 @@
+{
+  "markets": {
+    "binance_spot": {
+      "enabled": true,
+      "symbol": "BTCUSDT",
+      "wsUrl": "wss://stream.binance.com:9443/stream?streams=btcusdt@trade/btcusdt@depth@100ms",
+      "restUrl": "https://api.binance.com/api/v3/depth?symbol=BTCUSDT&limit=5000",
+      "depthLimit": 0,
+      "marketData": {
+        "ohlcv": "https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1m&limit=1",
+        "ticker": "https://api.binance.com/api/v3/ticker/24hr?symbol=BTCUSDT"
+      }
+    },
+    "binance_perp": {
+      "enabled": true,
+      "symbol": "BTCUSDT",
+      "wsUrl": "wss://fstream.binance.com/stream?streams=btcusdt@trade/btcusdt@depth@100ms/btcusdt@forceOrder",
+      "restUrl": "https://fapi.binance.com/fapi/v1/depth?symbol=BTCUSDT&limit=1000",
+      "depthLimit": 0,
+      "marketData": {
+        "ohlcv": "https://fapi.binance.com/fapi/v1/klines?symbol=BTCUSDT&interval=1m&limit=1",
+        "ticker": "https://fapi.binance.com/fapi/v1/ticker/24hr?symbol=BTCUSDT",
+        "lsratio": "https://fapi.binance.com/futures/data/globalLongShortAccountRatio?symbol=BTCUSDT&period=1h&limit=1",
+        "takervol": "https://fapi.binance.com/futures/data/takerlongshortRatio?symbol=BTCUSDT&period=1h&limit=1"
+      }
+    },
+    "bybit_perp": {
+      "enabled": true,
+      "symbol": "BTCUSDT",
+      "wsUrl": "wss://stream.bybit.com/v5/public/linear",
+      "restUrl": "https://api.bybit.com/v5/market/orderbook?category=linear&symbol=BTCUSDT&limit=1000",
+      "depthLimit": 0,
+      "marketData": {
+        "ohlcv": "https://api.bybit.com/v5/market/kline?category=linear&symbol=BTCUSDT&interval=1&limit=1",
+        "ticker": "https://api.bybit.com/v5/market/tickers?category=linear&symbol=BTCUSDT",
+        "lsratio": "https://api.bybit.com/v5/market/account-ratio?category=linear&symbol=BTCUSDT&period=1h"
+      }
+    },
+    "okx_perp": {
+      "enabled": true,
+      "symbol": "BTC-USDT-SWAP",
+      "wsUrl": "wss://ws.okx.com:8443/ws/v5/public",
+      "restUrl": "https://www.okx.com/api/v5/market/books?instId=BTC-USDT-SWAP&sz=400",
+      "depthLimit": 0,
+      "marketData": {
+        "ohlcv": "https://www.okx.com/api/v5/market/candles?instId=BTC-USDT-SWAP&bar=1m&limit=1",
+        "ticker": "https://www.okx.com/api/v5/market/ticker?instId=BTC-USDT-SWAP",
+        "lsratio": "https://www.okx.com/api/v5/rubik/stat/contracts/long-short-account-ratio?ccy=BTC&period=1H"
+      }
+    },
+    "okx_spot": {
+      "enabled": true,
+      "symbol": "BTC-USDT",
+      "wsUrl": "wss://ws.okx.com:8443/ws/v5/public",
+      "restUrl": "https://www.okx.com/api/v5/market/books?instId=BTC-USDT&sz=400",
+      "depthLimit": 0,
+      "marketData": {
+        "ohlcv": "https://www.okx.com/api/v5/market/candles?instId=BTC-USDT&bar=1m&limit=1",
+        "ticker": "https://www.okx.com/api/v5/market/ticker?instId=BTC-USDT"
+      }
+    },
+    "bybit_spot": {
+      "enabled": true,
+      "symbol": "BTCUSDT",
+      "wsUrl": "wss://stream.bybit.com/v5/public/spot",
+      "restUrl": "https://api.bybit.com/v5/market/orderbook?category=spot&symbol=BTCUSDT&limit=1000",
+      "depthLimit": 0,
+      "marketData": {
+        "ohlcv": "https://api.bybit.com/v5/market/kline?category=spot&symbol=BTCUSDT&interval=1&limit=1",
+        "ticker": "https://api.bybit.com/v5/market/tickers?category=spot&symbol=BTCUSDT"
+      }
+    },
+    "binance_coinm_perp": {
+      "enabled": true,
+      "symbol": "BTCUSD_PERP",
+      "wsUrl": "wss://dstream.binance.com/stream?streams=btcusd_perp@trade/btcusd_perp@depth@100ms/btcusd_perp@forceOrder",
+      "restUrl": "https://dapi.binance.com/dapi/v1/depth?symbol=BTCUSD_PERP&limit=1000",
+      "depthLimit": 0,
+      "marketData": {
+        "ohlcv": "https://dapi.binance.com/dapi/v1/klines?symbol=BTCUSD_PERP&interval=1m&limit=1",
+        "ticker": "https://dapi.binance.com/dapi/v1/ticker/24hr?symbol=BTCUSD_PERP"
+      }
+    },
+    "binance_perp_btcusdc": {
+      "enabled": true,
+      "symbol": "BTCUSDC",
+      "wsUrl": "wss://fstream.binance.com/stream?streams=btcusdc@trade/btcusdc@depth@100ms/btcusdc@forceOrder",
+      "restUrl": "https://fapi.binance.com/fapi/v1/depth?symbol=BTCUSDC&limit=1000",
+      "depthLimit": 0,
+      "marketData": {
+        "ohlcv": "https://fapi.binance.com/fapi/v1/klines?symbol=BTCUSDC&interval=1m&limit=1",
+        "ticker": "https://fapi.binance.com/fapi/v1/ticker/24hr?symbol=BTCUSDC"
+      }
+    },
+    "binance_spot_usdc": {
+      "enabled": true,
+      "symbol": "BTCUSDC",
+      "wsUrl": "wss://stream.binance.com:9443/stream?streams=btcusdc@trade/btcusdc@depth@100ms",
+      "restUrl": "https://api.binance.com/api/v3/depth?symbol=BTCUSDC&limit=5000",
+      "depthLimit": 0,
+      "marketData": {
+        "ohlcv": "https://api.binance.com/api/v3/klines?symbol=BTCUSDC&interval=1m&limit=1",
+        "ticker": "https://api.binance.com/api/v3/ticker/24hr?symbol=BTCUSDC"
+      }
+    },
+    "kraken_spot": {
+      "enabled": true,
+      "symbol": "XBT/USD",
+      "restPair": "XBTUSD",
+      "wsUrl": "wss://ws.kraken.com",
+      "restUrl": "https://api.kraken.com/0/public/Depth?pair=XBTUSD&count=1000",
+      "depthLimit": 0,
+      "marketData": {
+        "ohlcv": "https://api.kraken.com/0/public/OHLC?pair=XBTUSD&interval=1",
+        "ticker": "https://api.kraken.com/0/public/Ticker?pair=XBTUSD"
+      }
+    },
+    "bitstamp_spot": {
+      "enabled": true,
+      "symbol": "BTC/USD",
+      "wsUrl": "wss://ws.bitstamp.net",
+      "restUrl": "",
+      "depthLimit": 0
+    },
+    "gemini_spot": {
+      "enabled": true,
+      "symbol": "BTC/USD",
+      "wsUrl": "wss://ws.gemini.com",
+      "restUrl": "",
+      "depthLimit": 0
+    },
+    "crypto_com_spot": {
+      "enabled": true,
+      "symbol": "BTC_USD",
+      "wsUrl": "wss://stream.crypto.com/exchange/v1/market",
+      "restUrl": "",
+      "depthLimit": 0
+    },
+    "bitfinex_spot": {
+      "enabled": true,
+      "symbol": "tBTCUSD",
+      "wsUrl": "wss://api-pub.bitfinex.com/ws/2",
+      "restUrl": "",
+      "depthLimit": 0
+    },
+    "coinbase_international_perp": {
+      "enabled": false,
+      "symbol": "BTC-PERP",
+      "wsUrl": "wss://ws-md.international.coinbase.com",
+      "restUrl": "",
+      "depthLimit": 0
+    },
+    "bitmex_perp": {
+      "enabled": true,
+      "symbol": "XBTUSD",
+      "wsUrl": "wss://ws.bitmex.com/realtime?subscribe=trade:XBTUSD",
+      "restUrl": "",
+      "depthLimit": 0
+    },
+    "coinbase_spot": {
+      "enabled": true,
+      "symbol": "BTC-USD",
+      "wsUrl": "wss://advanced-trade-ws.coinbase.com",
+      "restUrl": "https://api.exchange.coinbase.com/products/BTC-USD/book?level=3",
+      "depthLimit": 0,
+      "marketData": {
+        "ohlcv": "https://api.exchange.coinbase.com/products/BTC-USD/candles?granularity=60",
+        "ticker": "https://api.exchange.coinbase.com/products/BTC-USD/ticker"
+      }
+    },
+    "hyperliquid_perp": {
+      "enabled": true,
+      "symbol": "BTC",
+      "wsUrl": "wss://api.hyperliquid.xyz/ws",
+      "restUrl": "",
+      "depthLimit": 0,
+      "marketData": {
+        "ohlcv": "https://api.hyperliquid.xyz/info"
+      }
+    }
+  },
+  "output": {
+    "base_path": "data/live_v3",
+    "flush_trades_ms": 200,
+    "flush_features_ms": 200,
+    "flush_book_ms": 1000,
+    "flush_health_ms": 1000,
+    "flush_liquidations_ms": 200
+  },
+  "tick": {
+    "feature_ms": 1000,
+    "book_snapshot_ms": 30000,
+    "market_data_ms": 60000
+  }
+}

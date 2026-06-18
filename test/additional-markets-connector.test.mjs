@@ -1,0 +1,152 @@
+// test/additional-markets-connector.test.mjs — additional BTC market parser tests
+
+import { describe, it } from 'node:test';
+import assert from 'node:assert';
+import { CryptoComConnector } from '../lib/crypto-com-connector.mjs';
+import { BitfinexConnector } from '../lib/bitfinex-connector.mjs';
+import { BitmexConnector } from '../lib/bitmex-connector.mjs';
+import { CoinbaseInternationalConnector } from '../lib/coinbase-international-connector.mjs';
+
+const approx = (actual, expected, epsilon = 1e-12) => {
+  assert.ok(Math.abs(actual - expected) <= epsilon, `${actual} != ${expected}`);
+};
+
+const createConn = (Ctor, config = {}) => {
+  const conn = new Ctor(config);
+  conn._ws = { send: () => {} };
+  conn._setState('running');
+  return conn;
+};
+
+describe('CryptoComConnector parser', () => {
+  it('sends the trade subscribe frame', () => {
+    const conn = new CryptoComConnector({});
+    let sent = [];
+    conn._ws = { send: (msg) => { sent.push(msg); } };
+    conn.subscribe();
+    assert.strictEqual(sent.length, 1);
+    const parsed = JSON.parse(sent[0]);
+    assert.strictEqual(parsed.method, 'subscribe');
+    assert.ok(parsed.params.channels.includes('trade.BTC_USD'));
+    assert.ok(parsed.params.channels.includes('book.BTC_USD.10'));
+  });
+
+  it('parses BUY trades from the public payload', () => {
+    const conn = createConn(CryptoComConnector);
+    let emitted = null;
+    conn.on('trade', (ev) => { emitted = ev; });
+
+    conn._onMessage({
+      channel: 'trade.BTC_USD',
+      data: [{ p: '65000.1', q: '0.2', s: 'BUY', t: 1700000000123, tid: 'c1' }],
+    });
+
+    assert.ok(emitted);
+    assert.strictEqual(emitted.market, 'crypto_com_spot');
+    assert.strictEqual(emitted.price, 65000.1);
+    assert.strictEqual(emitted.qty, 0.2);
+    assert.strictEqual(emitted.side, 'buy');
+    assert.strictEqual(emitted.ts, 1700000000123);
+    assert.strictEqual(emitted.tradeId, 'c1');
+  });
+});
+
+describe('BitfinexConnector parser', () => {
+  it('sends the trades subscribe frame', () => {
+    const conn = new BitfinexConnector({});
+    const sent = [];
+    conn._ws = { send: (msg) => { sent.push(msg); } };
+    conn.subscribe();
+    assert.strictEqual(sent.length, 2);
+    const parsed0 = JSON.parse(sent[0]);
+    const parsed1 = JSON.parse(sent[1]);
+    assert.strictEqual(parsed0.event, 'subscribe');
+    assert.ok((parsed0.channel === 'trades' && parsed1.channel === 'book') ||
+              (parsed0.channel === 'book' && parsed1.channel === 'trades'));
+    assert.strictEqual(parsed0.symbol || parsed1.symbol, 'tBTCUSD');
+  });
+
+  it('parses te/tu trade arrays and normalizes inverse amount sign', () => {
+    const conn = createConn(BitfinexConnector);
+    const emitted = [];
+    conn.on('trade', (ev) => emitted.push(ev));
+
+    conn._onMessage([42, 'tu', [999, 1700000000456, -2, 65000]]);
+
+    assert.strictEqual(emitted.length, 1);
+    assert.strictEqual(emitted[0].market, 'bitfinex_spot');
+    assert.strictEqual(emitted[0].price, 65000);
+    assert.strictEqual(emitted[0].qty, 2);
+    assert.strictEqual(emitted[0].side, 'sell');
+    assert.strictEqual(emitted[0].ts, 1700000000456);
+    assert.strictEqual(emitted[0].tradeId, '999');
+  });
+});
+
+describe('BitmexConnector parser', () => {
+  it('uses the embedded trade subscription URL', () => {
+    const conn = new BitmexConnector({});
+    assert.ok(conn.wsUrl.includes('trade:XBTUSD'));
+  });
+
+  it('parses trade rows and normalizes XBTUSD contract size', () => {
+    const conn = createConn(BitmexConnector);
+    const emitted = [];
+    conn.on('trade', (ev) => emitted.push(ev));
+
+    conn._onMessage({
+      table: 'trade',
+      data: [{ price: 50000, size: 50, side: 'Buy', timestamp: '2026-06-05T00:00:00.000Z', trdMatchID: 'mx1' }],
+    });
+
+    assert.strictEqual(emitted.length, 1);
+    assert.strictEqual(emitted[0].market, 'bitmex_perp');
+    approx(emitted[0].qty, 0.001);
+    assert.strictEqual(emitted[0].side, 'buy');
+    assert.strictEqual(emitted[0].tradeId, 'mx1');
+  });
+});
+
+describe('CoinbaseInternationalConnector parser', () => {
+  it('requires auth fields before subscribe', () => {
+    const conn = new CoinbaseInternationalConnector({});
+    let error = null;
+    let sent = false;
+    conn._ws = { send: () => { sent = true; } };
+    conn.on('error', (ev) => { error = ev; });
+    conn.subscribe();
+    assert.ok(error);
+    assert.strictEqual(sent, false);
+  });
+
+  it('sends the authenticated MATCH subscribe frame', () => {
+    const conn = new CoinbaseInternationalConnector({
+      auth: { key: 'k', passphrase: 'p', signature: 'sig', time: '1683730727' },
+    });
+    let sent = null;
+    conn._ws = { send: (msg) => { sent = msg; } };
+    conn.subscribe();
+    const parsed = JSON.parse(sent);
+    assert.strictEqual(parsed.type, 'SUBSCRIBE');
+    assert.deepStrictEqual(parsed.product_ids, ['BTC-PERP']);
+    assert.deepStrictEqual(parsed.channels, ['MATCH']);
+  });
+
+  it('parses MATCH trades and honors aggressor side', () => {
+    const conn = createConn(CoinbaseInternationalConnector);
+    let emitted = null;
+    conn.on('trade', (ev) => { emitted = ev; });
+
+    conn._onMessage({
+      channel: 'MATCH',
+      events: [{ trades: [{ price: '65012.25', size: '0.42', side: 'SELL', time: '2026-06-05T00:00:00.000Z', trade_id: 'cbi1' }] }],
+    });
+
+    assert.ok(emitted);
+    assert.strictEqual(emitted.market, 'coinbase_international_perp');
+    assert.strictEqual(emitted.price, 65012.25);
+    assert.strictEqual(emitted.qty, 0.42);
+    assert.strictEqual(emitted.side, 'sell');
+    assert.strictEqual(emitted.tradeId, 'cbi1');
+  });
+});

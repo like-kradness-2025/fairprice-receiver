@@ -1,0 +1,763 @@
+// test/connector-parser.test.mjs — Bybit/OKX/Coinbase/Hyperliquid connector parser unit tests
+
+import { describe, it } from 'node:test';
+import assert from 'node:assert';
+import { BybitConnector } from '../lib/bybit-connector.mjs';
+import { OkxConnector } from '../lib/okx-connector.mjs';
+import { CoinbaseConnector } from '../lib/coinbase-connector.mjs';
+import { HyperliquidConnector } from '../lib/hyperliquid-connector.mjs';
+import { BinanceSpotUsdcConnector } from '../lib/binance-usdc-connector.mjs';
+import { calculateKrakenChecksum } from '../lib/kraken-connector.mjs';
+import { BinanceCoinmPerpConnector, BinancePerpBtcusdcConnector, BybitSpotConnector, OkxSpotConnector, KrakenSpotConnectorAlias } from '../lib/market-connectors.mjs';
+
+// ====== Bybit ======
+
+describe('BybitConnector parser', () => {
+  function createBybitConn() {
+    const conn = new BybitConnector({});
+    conn._ws = null;
+    conn._setState('running');
+    return conn;
+  }
+
+  describe('snapshot', () => {
+    it('should apply full book snapshot', () => {
+      const conn = createBybitConn();
+      const msg = {
+        topic: 'orderbook.1000.BTCUSDT',
+        type: 'snapshot',
+        ts: 1700000000000,
+        data: {
+          s: 'BTCUSDT',
+          seq: 12345,
+          b: [['65000.00', '1.5'], ['64999.00', '2.0']],
+          a: [['65001.00', '0.8'], ['65002.00', '1.2']],
+        },
+      };
+
+      let emitted = null;
+      conn.on('depth', (ev) => { emitted = ev; });
+      conn._handleDepth(msg);
+
+      assert.notStrictEqual(emitted, null);
+      assert.strictEqual(emitted.type, 'snapshot');
+      assert.strictEqual(emitted.seq, 12345);
+      assert.strictEqual(emitted.bids.length, 2);
+      assert.strictEqual(emitted.asks.length, 2);
+      assert.strictEqual(conn.book.getBestBid(), '65000.00');
+      assert.strictEqual(conn.book.getBestAsk(), '65001.00');
+    });
+  });
+
+  describe('delta', () => {
+    it('should apply delta updates and update seq', () => {
+      const conn = createBybitConn();
+      conn.book.applySnapshot([['65000', '1']], [['65001', '1']], 100);
+
+      let depthEmitted = null;
+      conn.on('depth', (ev) => { depthEmitted = ev; });
+
+      conn._handleDepth({
+        topic: 'orderbook.1000.BTCUSDT',
+        type: 'delta',
+        ts: 1700000000100,
+        data: {
+          s: 'BTCUSDT',
+          seq: 101,
+          b: [['65000', '2.0', '0']],   // update type 0 = update
+          a: [['65001', '0', '2']],      // update type 2 = delete
+        },
+      });
+
+      assert.notStrictEqual(depthEmitted, null);
+      assert.strictEqual(depthEmitted.type, 'update');
+      assert.strictEqual(conn.book.getBestBid(), '65000');
+      assert.strictEqual(conn.book.bids.get('65000'), '2.0'); // qty updated
+      assert.strictEqual(conn.book.asks.has('65001'), false); // deleted
+    });
+
+    it('should buffer deltas during syncing and replay after snapshot', () => {
+      const conn = new BybitConnector({});
+      conn._ws = null;
+      conn._setState('syncing');
+
+      // Delta while syncing
+      conn._handleDepth({
+        topic: 'orderbook.1000.BTCUSDT',
+        type: 'delta',
+        ts: 1700000000100,
+        data: { s: 'BTCUSDT', seq: 102, b: [['65000', '5.0']], a: [] },
+      });
+      assert.strictEqual(conn._ringBuf.length, 1);
+
+      // Snapshot arrives — should replay ringbuf
+      conn._handleDepth({
+        topic: 'orderbook.1000.BTCUSDT',
+        type: 'snapshot',
+        ts: 1700000000000,
+        data: { s: 'BTCUSDT', seq: 100, b: [['65000', '1.0']], a: [['65001', '1.0']] },
+      });
+
+      // After replay: bid should be updated to 5.0 (from ringbuf delta with seq 102 > 100)
+      assert.strictEqual(conn.book.getBestBid(), '65000');
+      assert.strictEqual(conn.book.bids.get('65000'), '5.0');
+      assert.strictEqual(conn._ringBuf.length, 0); // ringbuf cleared
+    });
+  });
+
+  describe('trade parsing', () => {
+    it('should parse publicTrade data array', () => {
+      const conn = createBybitConn();
+      const tradesMsg = {
+        topic: 'publicTrade.BTCUSDT',
+        data: [
+          { p: '65000.5', v: '1.2', S: 'Buy', T: 1700000000000, i: 'abc123' },
+          { p: '65001.0', v: '0.5', S: 'Sell', T: 1700000000001, i: 'def456' },
+        ],
+      };
+
+      const emitted = [];
+      conn.on('trade', (ev) => emitted.push(ev));
+      conn._handleTrade(tradesMsg);
+
+      assert.strictEqual(emitted.length, 2);
+      assert.strictEqual(emitted[0].price, 65000.5);
+      assert.strictEqual(emitted[0].qty, 1.2);
+      assert.strictEqual(emitted[0].side, 'buy');
+      assert.strictEqual(emitted[1].side, 'sell');
+      assert.strictEqual(emitted[0].tradeId, 'abc123');
+    });
+  });
+
+  describe('_onMessage routing', () => {
+    it('should route by topic', () => {
+      const conn = createBybitConn();
+      let depthCalled = false, tradeCalled = false;
+      conn._handleDepth = () => { depthCalled = true; };
+      conn._handleTrade = () => { tradeCalled = true; };
+
+      conn._onMessage({ topic: 'orderbook.1000.BTCUSDT', type: 'snapshot', data: { b: [], a: [] } });
+      assert.ok(depthCalled);
+
+      conn._onMessage({ topic: 'publicTrade.BTCUSDT', data: [] });
+      assert.ok(tradeCalled);
+    });
+
+    it('should ignore subscribe ack and pong', () => {
+      const conn = createBybitConn();
+      let msgHandled = false;
+      conn._handleDepth = () => { msgHandled = true; };
+      conn._handleTrade = () => { msgHandled = true; };
+
+      conn._onMessage({ op: 'subscribe', success: true });
+      conn._onMessage({ op: 'pong', req_id: '', ret_msg: '', conn_id: '' });
+      assert.strictEqual(msgHandled, false);
+    });
+  });
+
+  describe('liquidation parsing', () => {
+    it('should emit liquidation row from _handleLiquidation with data array (allLiquidation)', () => {
+      const conn = createBybitConn();
+      let emitted = null;
+      conn.on('liquidation', (ev) => { emitted = ev; });
+
+      conn._handleLiquidation({
+        topic: 'allLiquidation.BTCUSDT',
+        data: [{
+          price: '65000',
+          side: 'Sell',
+          size: '2.5',
+          symbol: 'BTCUSDT',
+          updatedTime: 1700000000000,
+        }],
+      });
+
+      assert.notStrictEqual(emitted, null);
+      assert.strictEqual(emitted.market, 'bybit_perp');
+      assert.strictEqual(emitted.exchange, 'bybit');
+      assert.strictEqual(emitted.symbol, 'BTCUSDT');
+      assert.strictEqual(emitted.side, 'sell');
+      assert.strictEqual(emitted.price, 65000);
+      assert.strictEqual(emitted.qty, 2.5);
+      assert.strictEqual(emitted.notional, 162500);
+      assert.strictEqual(emitted.raw_type, 'liquidation');
+    });
+
+    it('should emit liquidation row with single object (backward compat)', () => {
+      const conn = createBybitConn();
+      let emitted = null;
+      conn.on('liquidation', (ev) => { emitted = ev; });
+
+      conn._handleLiquidation({
+        topic: 'allLiquidation.BTCUSDT',
+        data: { price: '66000', side: 'Buy', size: '1.0', symbol: 'BTCUSDT', updatedTime: 1700000000001 },
+      });
+
+      assert.notStrictEqual(emitted, null);
+      assert.strictEqual(emitted.side, 'buy');
+      assert.strictEqual(emitted.price, 66000);
+      assert.strictEqual(emitted.qty, 1.0);
+    });
+
+    it('should accept alternative field names (p/v/S/s/T)', () => {
+      const conn = createBybitConn();
+      let emitted = null;
+      conn.on('liquidation', (ev) => { emitted = ev; });
+
+      conn._handleLiquidation({
+        topic: 'allLiquidation.BTCUSDT',
+        data: [{ p: '67000', v: '3.0', S: 'Sell', s: 'BTCUSDT', T: 1700000000002 }],
+      });
+
+      assert.notStrictEqual(emitted, null);
+      assert.strictEqual(emitted.side, 'sell');
+      assert.strictEqual(emitted.price, 67000);
+      assert.strictEqual(emitted.qty, 3.0);
+    });
+  });
+});
+
+// ====== Kraken ======
+
+describe('KrakenSpotConnector parser', () => {
+  it('should parse book snapshot, trade updates, and route messages', () => {
+    const conn = new KrakenSpotConnectorAlias({});
+    conn._ws = null;
+    conn._setState('running');
+
+    let depth = null;
+    let tradeCount = 0;
+    conn.on('depth', (ev) => { depth = ev; });
+    conn.on('trade', () => { tradeCount += 1; });
+
+    conn._onMessage([42, { as: [['65001.0', '1.2', '1700000000.0']], bs: [['65000.0', '2.3', '1700000000.0']] }, 'book-10', 'XBT/USD']);
+    assert.ok(depth);
+    assert.strictEqual(depth.type, 'snapshot');
+    assert.strictEqual(conn.book.getBestBid(), '65000.0');
+    assert.strictEqual(conn.book.getBestAsk(), '65001.0');
+    assert.strictEqual(calculateKrakenChecksum(conn.book), 2817500868);
+
+    conn._onMessage([42, { a: [['65001.0', '1.0', '1700000001.0']], b: [['65000.0', '2.0', '1700000001.0']] }, 'book-10', 'XBT/USD']);
+    assert.strictEqual(conn.book.bids.get('65000.0'), '2.0');
+    assert.strictEqual(conn.book.asks.get('65001.0'), '1.0');
+
+    conn._onMessage([42, [['65010.0', '0.1', '1700000002.0', 'b', 'l', '']], 'trade', 'XBT/USD']);
+    assert.strictEqual(tradeCount, 1);
+  });
+
+  it('should convert Kraken trade timestamps from seconds to ms', () => {
+    const conn = new KrakenSpotConnectorAlias({});
+    conn._ws = null;
+    conn._setState('running');
+
+    let trade = null;
+    conn.on('trade', (ev) => { trade = ev; });
+    conn._onMessage([42, [['65010.0', '0.1', '1700000002.0', 'b', 'l', '']], 'trade', 'XBT/USD']);
+
+    assert.ok(trade);
+    assert.strictEqual(trade.ts, 1700000002000);
+  });
+
+  it('should reject book updates when Kraken checksum mismatches', () => {
+    const conn = new KrakenSpotConnectorAlias({});
+    conn._ws = { close: () => {} };
+    conn._scheduleReconnect = () => {};
+    conn._setState('running');
+
+    let error = null;
+    conn.on('error', (ev) => { error = ev; });
+    conn._onMessage([42, { as: [['65001.0', '1.2', '1700000000.0']], bs: [['65000.0', '2.3', '1700000000.0']] }, 'book-10', 'XBT/USD']);
+    conn._onMessage([42, { a: [['65001.0', '1.0', '1700000001.0']], c: '1' }, 'book-10', 'XBT/USD']);
+
+    assert.ok(error);
+    assert.match(error.message, /Kraken checksum mismatch/);
+    assert.ok(conn.book.isEmpty());
+  });
+
+  it('should fall back to the first REST depth key when pair key is missing', async () => {
+    const conn = new KrakenSpotConnectorAlias({ restPair: 'XBTUSD' });
+    conn._ws = null;
+    conn._setState('running');
+    conn._waitForWsSnapshot = async () => { throw Object.assign(new Error('timeout'), { code: 'WS_SNAPSHOT_TIMEOUT' }); };
+    conn._fetchSnapshot = async () => ({ result: { XXBTZUSD: { bids: [['65000.0', '1.0']], asks: [['65001.0', '1.1']] } } });
+    conn._notifyWsSnapshotReceived = () => {};
+    conn._finalizeWsSnapshotSync = () => {};
+
+    await conn._syncBook();
+    assert.strictEqual(conn.book.getBestBid(), '65000.0');
+    assert.strictEqual(conn.book.getBestAsk(), '65001.0');
+  });
+});
+
+
+describe('OkxConnector parser', () => {
+  function createOkxConn() {
+    const conn = new OkxConnector({});
+    conn._ws = null;
+    conn._setState('running');
+    return conn;
+  }
+
+  describe('_preprocessRaw', () => {
+    it('should send pong on ping string and return true', () => {
+      const conn = createOkxConn();
+      let sent = '';
+      conn._ws = { send: (s) => { sent = s; } };
+
+      const result = conn._preprocessRaw(Buffer.from('ping'));
+      assert.strictEqual(result, true);
+      assert.strictEqual(sent, 'pong');
+    });
+
+    it('should return false for non-ping data', () => {
+      const conn = createOkxConn();
+      conn._ws = { send: () => {} };
+      assert.strictEqual(conn._preprocessRaw(Buffer.from('{"event":"subscribe"}')), false);
+    });
+  });
+
+  describe('snapshot', () => {
+    it('should apply full book snapshot from books channel', () => {
+      const conn = createOkxConn();
+      const msg = {
+        arg: { channel: 'books', instId: 'BTC-USDT-SWAP' },
+        action: 'snapshot',
+        data: [{
+          asks: [['65001.0', '0.8', '0', '1'], ['65002.0', '1.2', '0', '2']],
+          bids: [['65000.0', '1.5', '0', '1'], ['64999.0', '2.0', '0', '2']],
+          ts: '1700000000000',
+          seqId: 500,
+        }],
+      };
+
+      let emitted = null;
+      conn.on('depth', (ev) => { emitted = ev; });
+      conn._handleDepth(msg);
+
+      assert.notStrictEqual(emitted, null);
+      assert.strictEqual(emitted.type, 'snapshot');
+      assert.strictEqual(emitted.seq, 500);
+      assert.strictEqual(conn.book.getBestBid(), '65000.0');
+      assert.strictEqual(conn.book.getBestAsk(), '65001.0');
+    });
+  });
+
+  describe('update', () => {
+    it('should apply level update and handle qty=0 as delete', () => {
+      const conn = createOkxConn();
+      conn.book.applySnapshot([['65000', '1']], [['65001', '1']], 100);
+
+      conn._handleDepth({
+        arg: { channel: 'books', instId: 'BTC-USDT-SWAP' },
+        action: 'update',
+        data: [{
+          asks: [['65001', '0', '0', '0']], // qty=0 → delete
+          bids: [['65000', '3.0', '0', '0']],
+          ts: '1700000000100',
+          seqId: 101,
+        }],
+      });
+
+      assert.strictEqual(conn.book.bids.get('65000'), '3.0');
+      assert.strictEqual(conn.book.asks.has('65001'), false);
+      assert.strictEqual(conn.book._lastSeq, 101);
+    });
+  });
+
+  describe('trade parsing', () => {
+    it('should parse each trade in data array', () => {
+      const conn = createOkxConn();
+      const tradesMsg = {
+        arg: { channel: 'trades', instId: 'BTC-USDT-SWAP' },
+        data: [
+          { px: '65000.5', sz: '1.2', side: 'buy', ts: '1700000000000', tradeId: '111' },
+          { px: '65001.0', sz: '0.3', side: 'sell', ts: '1700000000001', tradeId: '222' },
+        ],
+      };
+
+      const emitted = [];
+      conn.on('trade', (ev) => emitted.push(ev));
+      conn._handleTrade(tradesMsg);
+
+      assert.strictEqual(emitted.length, 2);
+      assert.strictEqual(emitted[0].side, 'buy');
+      assert.strictEqual(emitted[1].side, 'sell');
+      assert.strictEqual(emitted[0].tradeId, '111');
+    });
+  });
+
+  describe('_onMessage routing', () => {
+    it('should ignore subscribe event', () => {
+      const conn = createOkxConn();
+      let called = false;
+      conn._handleDepth = () => { called = true; };
+      conn._onMessage({ event: 'subscribe', arg: { channel: 'books' } });
+      assert.strictEqual(called, false);
+    });
+
+    it('should route books to _handleDepth, trades to _handleTrade', () => {
+      const conn = createOkxConn();
+      let depthCalled = false, tradeCalled = false;
+      conn._handleDepth = () => { depthCalled = true; };
+      conn._handleTrade = () => { tradeCalled = true; };
+
+      conn._onMessage({ arg: { channel: 'books' }, action: 'snapshot', data: [{ asks: [], bids: [] }] });
+      assert.ok(depthCalled);
+
+      conn._onMessage({ arg: { channel: 'trades' }, data: [] });
+      assert.ok(tradeCalled);
+    });
+  });
+
+  describe('liquidation parsing', () => {
+    it('should emit liquidation row from _handleLiquidation', () => {
+      const conn = createOkxConn();
+      let emitted = null;
+      conn.on('liquidation', (ev) => { emitted = ev; });
+
+      conn._handleLiquidation({
+        arg: { channel: 'liquidation-orders', instType: 'SWAP', instId: 'BTC-USDT-SWAP' },
+        data: [{
+          instType: 'SWAP',
+          instId: 'BTC-USDT-SWAP',
+          side: 'sell',
+          sz: '3.0',
+          ts: '1700000000000',
+          fillSz: '3.0',
+          fillPx: '64950.0',
+          tdMode: 'cross',
+          uly: 'BTC-USD',
+        }],
+      });
+
+      assert.notStrictEqual(emitted, null);
+      assert.strictEqual(emitted.market, 'okx_perp');
+      assert.strictEqual(emitted.exchange, 'okx');
+      assert.strictEqual(emitted.symbol, 'BTC-USDT-SWAP');
+      assert.strictEqual(emitted.side, 'sell');
+      assert.strictEqual(emitted.price, 64950.0);
+      assert.strictEqual(emitted.qty, 3.0);
+      assert.strictEqual(emitted.notional, 194850.0);
+      assert.strictEqual(emitted.raw_type, 'liquidation-orders');
+    });
+  });
+});
+
+describe('CoinbaseConnector parser', () => {
+  function createCoinbaseConn() {
+    const conn = new CoinbaseConnector({});
+    conn._ws = null;
+    conn._setState('running');
+    return conn;
+  }
+
+  describe('snapshot', () => {
+    it('should apply full book from l2_data snapshot event', () => {
+      const conn = createCoinbaseConn();
+      const msg = {
+        channel: 'l2_data',
+        sequence_num: 1000,
+        events: [{
+          type: 'snapshot',
+          product_id: 'BTC-USD',
+          updates: [
+            { side: 'bid', event_time: '2026-06-05T00:00:00.000Z', price_level: '65000.00', new_quantity: '1.5' },
+            { side: 'bid', event_time: '2026-06-05T00:00:00.000Z', price_level: '64999.00', new_quantity: '2.0' },
+            { side: 'ask', event_time: '2026-06-05T00:00:00.000Z', price_level: '65001.00', new_quantity: '0.8' },
+            { side: 'ask', event_time: '2026-06-05T00:00:00.000Z', price_level: '65002.00', new_quantity: '1.2' },
+          ],
+        }],
+      };
+
+      let emitted = null;
+      conn.on('depth', (ev) => { emitted = ev; });
+      conn._handleDepth(msg);
+
+      assert.notStrictEqual(emitted, null);
+      assert.strictEqual(emitted.type, 'snapshot');
+      assert.strictEqual(emitted.seq, 1000);
+      assert.strictEqual(emitted.bids.length, 2);
+      assert.strictEqual(emitted.asks.length, 2);
+      assert.strictEqual(conn.book.getBestBid(), '65000.00');
+      assert.strictEqual(conn.book.getBestAsk(), '65001.00');
+    });
+
+    it('should treat side=offer as ask in snapshot', () => {
+      const conn = createCoinbaseConn();
+      const msg = {
+        channel: 'l2_data',
+        sequence_num: 1000,
+        events: [{
+          type: 'snapshot',
+          product_id: 'BTC-USD',
+          updates: [
+            { side: 'bid', price_level: '65000.00', new_quantity: '1.0' },
+            { side: 'offer', price_level: '65001.00', new_quantity: '2.0' },
+          ],
+        }],
+      };
+
+      conn._handleDepth(msg);
+      assert.strictEqual(conn.book.getBestBid(), '65000.00');
+      assert.strictEqual(conn.book.getBestAsk(), '65001.00');
+      assert.strictEqual(conn.book.asks.size, 1);
+    });
+  });
+
+  describe('l2_data update', () => {
+    it('should apply updates to book using price_level / new_quantity', () => {
+      const conn = createCoinbaseConn();
+      conn.book.applySnapshot([['65000', '1']], [['65001', '1']], 100);
+
+      conn._handleDepth({
+        channel: 'l2_data',
+        sequence_num: 101,
+        events: [{
+          type: 'update',
+          product_id: 'BTC-USD',
+          updates: [
+            { side: 'bid', event_time: '2026-06-05T00:00:01.000Z', price_level: '65000.00', new_quantity: '3.0' },
+            { side: 'ask', event_time: '2026-06-05T00:00:01.000Z', price_level: '65001.00', new_quantity: '0' },
+          ],
+        }],
+      });
+
+      assert.strictEqual(conn.book.bids.get('65000.00'), '3.0');
+      assert.strictEqual(conn.book.asks.has('65001.00'), false);
+      assert.strictEqual(conn.book._lastSeq, 101);
+    });
+
+    it('should treat side=offer as ask in update', () => {
+      const conn = createCoinbaseConn();
+      conn.book.applySnapshot([['65000', '1']], [['65001', '1']], 100);
+
+      conn._handleDepth({
+        channel: 'l2_data',
+        sequence_num: 102,
+        events: [{
+          type: 'update',
+          product_id: 'BTC-USD',
+          updates: [
+            { side: 'offer', price_level: '65001.00', new_quantity: '5.0' },
+          ],
+        }],
+      });
+
+      assert.strictEqual(conn.book.asks.get('65001.00'), '5.0');
+      assert.strictEqual(conn.book._lastSeq, 102);
+    });
+  });
+
+  describe('market_trades parsing', () => {
+    it('should parse Advanced Trade market_trades events', () => {
+      const conn = createCoinbaseConn();
+      const emitted = [];
+      conn.on('trade', (ev) => emitted.push(ev));
+
+      conn._handleTrade({
+        channel: 'market_trades',
+        sequence_num: 0,
+        events: [{
+          type: 'snapshot',
+          trades: [{
+            product_id: 'BTC-USD',
+            trade_id: '999',
+            price: '65000.50',
+            size: '1.5',
+            time: '2026-06-05T00:00:00.500Z',
+            side: 'BUY',
+          }],
+        }],
+      });
+
+      assert.strictEqual(emitted.length, 1);
+      assert.strictEqual(emitted[0].price, 65000.50);
+      assert.strictEqual(emitted[0].qty, 1.5);
+      assert.strictEqual(emitted[0].side, 'sell');
+      assert.strictEqual(emitted[0].tradeId, '999');
+    });
+  });
+
+  describe('_onMessage routing', () => {
+    it('should route l2_data to _handleDepth, market_trades to _handleTrade', () => {
+      const conn = createCoinbaseConn();
+      let depthCalled = false, tradeCalled = false;
+      conn._handleDepth = () => { depthCalled = true; };
+      conn._handleTrade = () => { tradeCalled = true; };
+
+      conn._onMessage({ channel: 'l2_data', sequence_num: 1, events: [{ type: 'snapshot', updates: [] }] });
+      assert.ok(depthCalled);
+
+      conn._onMessage({ channel: 'market_trades', events: [{ trades: [] }] });
+      assert.ok(tradeCalled);
+    });
+
+    it('should ignore subscriptions channel', () => {
+      const conn = createCoinbaseConn();
+      let depthCalled = false, tradeCalled = false;
+      conn._handleDepth = () => { depthCalled = true; };
+      conn._handleTrade = () => { tradeCalled = true; };
+
+      conn._onMessage({ channel: 'subscriptions', products: [{ product_id: 'BTC-USD' }] });
+      assert.strictEqual(depthCalled, false);
+      assert.strictEqual(tradeCalled, false);
+    });
+
+    it('should emit error on type=error messages', () => {
+      const conn = createCoinbaseConn();
+      let errorEmitted = null;
+      conn.on('error', (ev) => { errorEmitted = ev; });
+
+      conn._onMessage({ type: 'error', message: 'Failed to subscribe', reason: 'requires auth' });
+
+      assert.notStrictEqual(errorEmitted, null);
+      assert.ok(errorEmitted.message.includes('Failed'));
+    });
+  });
+});
+
+// ====== Hyperliquid ======
+
+describe('HyperliquidConnector parser', () => {
+  function createHyperliquidConn() {
+    const conn = new HyperliquidConnector({});
+    conn._ws = null;
+    conn._setState('running');
+    return conn;
+  }
+
+  describe('l2Book (depth snapshot)', () => {
+    it('should apply full book from l2Book message', () => {
+      const conn = createHyperliquidConn();
+      const msg = {
+        channel: 'l2Book',
+        data: {
+          coin: 'BTC',
+          levels: [
+            // bids (level[0])
+            [{ px: 65000.0, sz: 1.5, n: 2 }, { px: 64999.0, sz: 2.0, n: 1 }],
+            // asks (level[1])
+            [{ px: 65001.0, sz: 0.8, n: 3 }, { px: 65002.0, sz: 1.2, n: 1 }],
+          ],
+          time: 1700000000000,
+        },
+      };
+
+      let emitted = null;
+      conn.on('depth', (ev) => { emitted = ev; });
+      conn._handleDepth(msg);
+
+      assert.notStrictEqual(emitted, null);
+      assert.strictEqual(emitted.type, 'snapshot');
+      assert.strictEqual(emitted.bids.length, 2);
+      assert.strictEqual(emitted.asks.length, 2);
+      assert.strictEqual(conn.book.getBestBid(), '65000');
+      assert.strictEqual(conn.book.getBestAsk(), '65001');
+    });
+
+    it('should set wsSnapshotReceived on first l2Book', () => {
+      const conn = new HyperliquidConnector({});
+      conn._ws = null;
+
+      assert.strictEqual(conn._wsSnapshotReceived, false);
+
+      conn._handleDepth({
+        channel: 'l2Book',
+        data: { levels: [[], []], time: 1700000000000 },
+      });
+
+      assert.strictEqual(conn._wsSnapshotReceived, true);
+    });
+  });
+
+  describe('trade parsing', () => {
+    it('should parse trades data array', () => {
+      const conn = createHyperliquidConn();
+      const msg = {
+        channel: 'trades',
+        data: [
+          { px: 65000.5, sz: 1.2, side: 'B', time: 1700000000000, tid: '0xabc' },
+          { px: 65001.0, sz: 0.3, side: 'A', time: 1700000000001, tid: '0xdef' },
+        ],
+      };
+
+      const emitted = [];
+      conn.on('trade', (ev) => emitted.push(ev));
+      conn._handleTrade(msg);
+
+      assert.strictEqual(emitted.length, 2);
+      assert.strictEqual(emitted[0].side, 'buy');   // B → buy
+      assert.strictEqual(emitted[1].side, 'sell');  // A → sell
+      assert.strictEqual(emitted[0].price, 65000.5);
+      assert.strictEqual(emitted[0].qty, 1.2);
+      assert.strictEqual(emitted[0].tradeId, '0xabc');
+    });
+  });
+
+  describe('_onMessage routing', () => {
+    it('should route l2Book to _handleDepth, trades to _handleTrade', () => {
+      const conn = createHyperliquidConn();
+      let depthCalled = false, tradeCalled = false;
+      conn._handleDepth = () => { depthCalled = true; };
+      conn._handleTrade = () => { tradeCalled = true; };
+
+      conn._onMessage({ channel: 'l2Book', data: { levels: [[], []] } });
+      assert.ok(depthCalled);
+
+      conn._onMessage({ channel: 'trades', data: [] });
+      assert.ok(tradeCalled);
+    });
+  });
+});
+
+// ====== Main CONNECTOR_CLASSES smoke ======
+
+describe('CONNECTOR_CLASSES instantiation', () => {
+  const CONNECTOR_CLASSES = {
+    bybit_perp: BybitConnector,
+    okx_perp: OkxConnector,
+    coinbase_spot: CoinbaseConnector,
+    hyperliquid_perp: HyperliquidConnector,
+    binance_spot_usdc: BinanceSpotUsdcConnector,
+  };
+
+  for (const [market, Cls] of Object.entries(CONNECTOR_CLASSES)) {
+    it(`should instantiate ${market} without error`, () => {
+      const conn = new Cls({});
+      assert.ok(conn);
+      assert.strictEqual(conn.market, market);
+      assert.ok(conn.book);
+    });
+  }
+});
+
+describe('Market alias connectors', () => {
+  it('should wire market keys and books for new Binance markets', () => {
+    const coinm = new BinanceCoinmPerpConnector({});
+    const btcusdc = new BinancePerpBtcusdcConnector({});
+
+    assert.strictEqual(coinm.market, 'binance_coinm_perp');
+    assert.strictEqual(coinm.book.market, 'binance_coinm_perp');
+    assert.ok(coinm.wsUrl.includes('dstream.binance.com'));
+    assert.ok(coinm.restUrl.includes('dapi.binance.com'));
+
+    assert.strictEqual(btcusdc.market, 'binance_perp_btcusdc');
+    assert.strictEqual(btcusdc.book.market, 'binance_perp_btcusdc');
+    assert.ok(btcusdc.wsUrl.includes('fstream.binance.com'));
+    assert.ok(btcusdc.restUrl.includes('BTCUSDC'));
+  });
+
+  it('should wire market keys for spot aliases', () => {
+    const bybit = new BybitSpotConnector({});
+    const okx = new OkxSpotConnector({});
+
+    assert.strictEqual(bybit.market, 'bybit_spot');
+    assert.strictEqual(bybit.book.market, 'bybit_spot');
+    assert.ok(bybit.wsUrl.includes('/spot'));
+    assert.ok(bybit.restUrl.includes('category=spot'));
+
+    assert.strictEqual(okx.market, 'okx_spot');
+    assert.strictEqual(okx.book.market, 'okx_spot');
+    assert.ok(okx.restUrl.includes('instId=BTC-USDT'));
+  });
+});
