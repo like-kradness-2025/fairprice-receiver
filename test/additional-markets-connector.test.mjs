@@ -49,6 +49,38 @@ describe('CryptoComConnector parser', () => {
     assert.strictEqual(emitted.ts, 1700000000123);
     assert.strictEqual(emitted.tradeId, 'c1');
   });
+
+  it('handles book push updates (id=-1) as depth snapshots', () => {
+    const conn = createConn(CryptoComConnector);
+    const emitted = [];
+    conn.on('depth', (ev) => emitted.push(ev));
+
+    // Book push (id=-1, full snapshot)
+    conn._onMessage({
+      id: -1,
+      channel: 'book.BTC_USD.10',
+      data: [{
+        bids: [['65000.1', '1.5'], ['64999.0', '2.0']],
+        asks: [['65001.0', '0.8'], ['65002.0', '1.2']],
+        t: 1700000000000,
+      }],
+    });
+
+    assert.strictEqual(emitted.length, 1, 'should emit depth for book push');
+    assert.strictEqual(emitted[0].type, 'snapshot');
+    assert.strictEqual(emitted[0].bids.length, 2);
+    assert.strictEqual(emitted[0].asks.length, 2);
+
+    // Subscribe ACK should NOT trigger depth emit (separate path)
+    conn._onMessage({
+      id: 1,
+      method: 'subscribe',
+      code: 0,
+      result: { channel: 'book.BTC_USD.10' },
+    });
+    // Subscribe ACK: no depth emitted (the actual data comes in the result.data path)
+    assert.strictEqual(emitted.length, 1, 'subscribe ACK should not produce duplicate depth');
+  });
 });
 
 describe('BitfinexConnector parser', () => {
@@ -80,6 +112,22 @@ describe('BitfinexConnector parser', () => {
     assert.strictEqual(emitted[0].side, 'sell');
     assert.strictEqual(emitted[0].ts, 1700000000456);
     assert.strictEqual(emitted[0].tradeId, '999');
+  });
+
+  it('skips te (unconfirmed) and does not double-emit same trade id', () => {
+    const conn = createConn(BitfinexConnector);
+    const emitted = [];
+    conn.on('trade', (ev) => emitted.push(ev));
+
+    // Send 'te' first — should be silently skipped
+    conn._onMessage([42, 'te', [999, 1700000000456, -2, 65000]]);
+    assert.strictEqual(emitted.length, 0, 'te should be skipped');
+
+    // Send 'tu' for the SAME trade — should emit once
+    conn._onMessage([42, 'tu', [999, 1700000000456, -2, 65000]]);
+    assert.strictEqual(emitted.length, 1, 'tu should emit once');
+    assert.strictEqual(emitted[0].tradeId, '999');
+    assert.strictEqual(emitted[0].side, 'sell');
   });
 });
 

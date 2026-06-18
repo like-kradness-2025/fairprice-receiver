@@ -182,3 +182,77 @@ describe('BaseConnector connect() settle-once', () => {
     assert.ok(results[1].reason.message.includes('closed before open'));
   });
 });
+
+describe('BaseConnector _emitTrade side validation', function () {
+  it('should emit trade with valid side "buy"', () => {
+    const conn = new BaseConnector(
+      {},
+      { market: 'test_market', wsUrl: 'ws://localhost:9999', restUrl: '' },
+    );
+    conn._setWebSocket(MockWebSocket);
+    conn.subscribe = () => {};
+    const emitted = [];
+    conn.on('trade', (ev) => emitted.push(ev));
+
+    conn._emitTrade(65000, 1.0, 'buy', 1700000000000, 't1');
+    assert.strictEqual(emitted.length, 1);
+    assert.strictEqual(emitted[0].side, 'buy');
+  });
+
+  it('should emit trade with valid side "sell"', () => {
+    const conn = new BaseConnector(
+      {},
+      { market: 'test_market', wsUrl: 'ws://localhost:9999', restUrl: '' },
+    );
+    conn._setWebSocket(MockWebSocket);
+    conn.subscribe = () => {};
+    const emitted = [];
+    conn.on('trade', (ev) => emitted.push(ev));
+
+    conn._emitTrade(65000, 1.0, 'sell', 1700000000000, 't2');
+    assert.strictEqual(emitted.length, 1);
+    assert.strictEqual(emitted[0].side, 'sell');
+  });
+
+  it('should drop trade with invalid side "Buy"', () => {
+    const conn = new BaseConnector(
+      {},
+      { market: 'test_market', wsUrl: 'ws://localhost:9999', restUrl: '' },
+    );
+    conn._setWebSocket(MockWebSocket);
+    conn.subscribe = () => {};
+    const emitted = [];
+    conn.on('trade', (ev) => emitted.push(ev));
+
+    conn._emitTrade(65000, 1.0, 'Buy', 1700000000000, 't3');
+    assert.strictEqual(emitted.length, 0);
+  });
+
+  it('should drop trade with invalid side "SELL"', () => {
+    const conn = new BaseConnector(
+      {},
+      { market: 'test_market', wsUrl: 'ws://localhost:9999', restUrl: '' },
+    );
+    conn._setWebSocket(MockWebSocket);
+    conn.subscribe = () => {};
+    const emitted = [];
+    conn.on('trade', (ev) => emitted.push(ev));
+
+    conn._emitTrade(65000, 1.0, 'SELL', 1700000000000, 't4');
+    assert.strictEqual(emitted.length, 0);
+  });
+
+  it('should drop trade with invalid side null', () => {
+    const conn = new BaseConnector(
+      {},
+      { market: 'test_market', wsUrl: 'ws://localhost:9999', restUrl: '' },
+    );
+    conn._setWebSocket(MockWebSocket);
+    conn.subscribe = () => {};
+    const emitted = [];
+    conn.on('trade', (ev) => emitted.push(ev));
+
+    conn._emitTrade(65000, 1.0, null, 1700000000000, 't5');
+    assert.strictEqual(emitted.length, 0);
+  });
+});

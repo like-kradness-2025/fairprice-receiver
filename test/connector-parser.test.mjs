@@ -692,6 +692,55 @@ describe('HyperliquidConnector parser', () => {
       assert.strictEqual(emitted[0].qty, 1.2);
       assert.strictEqual(emitted[0].tradeId, '0xabc');
     });
+
+    it('normalizes nanosecond trade timestamps to milliseconds', () => {
+      const conn = createHyperliquidConn();
+      let emitted = [];
+      conn.on('trade', (ev) => emitted.push(ev));
+
+      conn._handleTrade({
+        channel: 'trades',
+        data: [{ px: 65000, sz: 1.0, side: 'B', time: 1750000000000000000, tid: 'ns1' }],
+      });
+
+      assert.strictEqual(emitted.length, 1);
+      assert.strictEqual(emitted[0].ts, 1750000000000);
+    });
+
+    it('normalizes nanosecond depth timestamps to milliseconds', () => {
+      const conn = createHyperliquidConn();
+      let emitted = [];
+      conn.on('depth', (ev) => emitted.push(ev));
+
+      conn._handleDepth({
+        channel: 'l2Book',
+        data: {
+          coin: 'BTC',
+          levels: [
+            [{ px: 65000, sz: 1.0, n: 1 }],
+            [{ px: 65001, sz: 0.5, n: 1 }],
+          ],
+          time: 1750000000000000000,
+        },
+      });
+
+      assert.strictEqual(emitted.length, 1);
+      assert.strictEqual(emitted[0].ts, 1750000000000);
+    });
+
+    it('passes through millisecond timestamps without modification', () => {
+      const conn = createHyperliquidConn();
+      let emitted = [];
+      conn.on('trade', (ev) => emitted.push(ev));
+
+      conn._handleTrade({
+        channel: 'trades',
+        data: [{ px: 65000, sz: 1.0, side: 'B', time: 1700000000000, tid: 'ms1' }],
+      });
+
+      assert.strictEqual(emitted.length, 1);
+      assert.strictEqual(emitted[0].ts, 1700000000000);
+    });
   });
 
   describe('_onMessage routing', () => {
