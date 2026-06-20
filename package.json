@@ -12,6 +12,7 @@
     "smoke:fairprice": "node fairprice_monitor.mjs --config config.v3.json --seconds 5 --markets binance_spot,binance_perp --output data/live_fairprice_smoke"
   },
   "dependencies": {
+    "duckdb": "^1.4.4",
     "ws": "^8.20.0"
   }
 }

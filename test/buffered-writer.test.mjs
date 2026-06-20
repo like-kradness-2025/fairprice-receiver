@@ -99,7 +99,9 @@ describe('BufferedWriter', () => {
       const w = new BufferedWriter(p, { autoFlush: false });
       await w.close();
       await w.write({ should: 'not appear' });
-      const content = fs.readFileSync(p, 'utf-8').trim();
+      // File should be empty or non-existent — either is acceptable
+      let content = '';
+      try { content = fs.readFileSync(p, 'utf-8').trim(); } catch { /* ENOENT means no data written */ }
       assert.strictEqual(content, '');
     });
   });

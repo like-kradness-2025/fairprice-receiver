@@ -258,7 +258,66 @@ describe('KrakenSpotConnector parser', () => {
     assert.strictEqual(trade.ts, 1700000002000);
   });
 
-  it('should reject book updates when Kraken checksum mismatches', () => {
+  // Checksum validation is skipped when fewer than 10 levels on either side
+  it('should skip checksum validation when fewer than 10 bid or ask levels', () => {
+    const conn = new KrakenSpotConnectorAlias({});
+    conn._ws = { close: () => {} };
+    conn._scheduleReconnect = () => {};
+    conn._setState('running');
+
+    let error = null;
+    let depthCount = 0;
+    conn.on('error', (ev) => { error = ev; });
+    conn.on('depth', () => { depthCount += 1; });
+
+    // Snapshot with only 1 bid and 1 ask — not enough for checksum
+    conn._onMessage([42, { as: [['65001.0', '1.2', '1700000000.0']], bs: [['65000.0', '2.3', '1700000000.0']] }, 'book-10', 'XBT/USD']);
+    assert.strictEqual(depthCount, 1); // snapshot emitted
+    // Update with c: '1' — checksum validation SKIPPED because <10 levels
+    conn._onMessage([42, { a: [['65001.0', '1.0', '1700000001.0']], c: '1' }, 'book-10', 'XBT/USD']);
+
+    assert.strictEqual(error, null);  // no error — checksum was not validated
+    assert.strictEqual(depthCount, 2); // update still emitted
+    assert.strictEqual(conn.book.isEmpty(), false); // book NOT cleared
+    assert.strictEqual(conn.book.asks.get('65001.0'), '1.0'); // update applied
+  });
+
+  // Checksum validation RUNS when >=10 levels each side, but mismatch does NOT trigger reconnect storm
+  it('should resync and clear book on checksum mismatch with >=10 levels', () => {
+    const conn = new KrakenSpotConnectorAlias({});
+    conn._ws = { close: () => {} };
+    let reconnectCount = 0;
+    conn._scheduleReconnect = () => { reconnectCount++; };
+    conn._setState('running');
+
+    let error = null;
+    let depthCount = 0;
+    conn.on('error', (ev) => { error = ev; });
+    conn.on('depth', () => { depthCount += 1; });
+
+    // Build a book with 10 bids and 10 asks
+    const tenBids = [];
+    const tenAsks = [];
+    for (let i = 0; i < 10; i++) {
+      tenBids.push([String(65000 - i * 10) + '.0', '1.0', '1700000000.0']);
+      tenAsks.push([String(65001 + i * 10) + '.0', '1.0', '1700000000.0']);
+    }
+    conn._onMessage([42, { as: tenAsks, bs: tenBids }, 'book-10', 'XBT/USD']);
+    assert.strictEqual(depthCount, 1); // snapshot
+
+    // Now the checksum is warm and we have 10 levels each side.
+    // Send an update with a wrong checksum (c: '1')
+    conn._onMessage([42, { a: [['65001.0', '2.0']], c: '1' }, 'book-10', 'XBT/USD']);
+
+    assert.ok(error);
+    assert.match(error.message, /Kraken checksum mismatch/);
+    assert.strictEqual(reconnectCount, 1);
+    assert.strictEqual(conn.book.isEmpty(), true); // book cleared on resync
+    assert.strictEqual(depthCount, 1); // mismatched update was not emitted
+  });
+
+  // data.c = null should not trigger checksum validation
+  it('should skip checksum when data.c is null', () => {
     const conn = new KrakenSpotConnectorAlias({});
     conn._ws = { close: () => {} };
     conn._scheduleReconnect = () => {};
@@ -266,12 +325,83 @@ describe('KrakenSpotConnector parser', () => {
 
     let error = null;
     conn.on('error', (ev) => { error = ev; });
-    conn._onMessage([42, { as: [['65001.0', '1.2', '1700000000.0']], bs: [['65000.0', '2.3', '1700000000.0']] }, 'book-10', 'XBT/USD']);
-    conn._onMessage([42, { a: [['65001.0', '1.0', '1700000001.0']], c: '1' }, 'book-10', 'XBT/USD']);
 
-    assert.ok(error);
-    assert.match(error.message, /Kraken checksum mismatch/);
-    assert.ok(conn.book.isEmpty());
+    // Snapshot with 10 bids and 10 asks
+    const tenBids = [];
+    const tenAsks = [];
+    for (let i = 0; i < 10; i++) {
+      tenBids.push([String(65000 - i * 10) + '.0', '1.0', '1700000000.0']);
+      tenAsks.push([String(65001 + i * 10) + '.0', '1.0', '1700000000.0']);
+    }
+    conn._onMessage([42, { as: tenAsks, bs: tenBids }, 'book-10', 'XBT/USD']);
+
+    // Update with c: null → seq should be undefined, checksum skipped
+    conn._onMessage([42, { a: [['65001.0', '1.0']], c: null }, 'book-10', 'XBT/USD']);
+
+    assert.strictEqual(error, null); // no error — checksum was not validated
+    assert.strictEqual(conn.book.isEmpty(), false); // book intact
+  });
+
+  // Persistent mismatches should NOT cause infinite reconnect loop
+  it('should not infinite-reconnect on persistent checksum mismatch', () => {
+    const conn = new KrakenSpotConnectorAlias({});
+    conn._ws = { close: () => {} };
+    let reconnectCount = 0;
+    conn._scheduleReconnect = () => { reconnectCount++; };
+    conn._setState('running');
+
+    // Build a book with 10 bids and 10 asks (enough for checksum validation)
+    const tenBids = [];
+    const tenAsks = [];
+    for (let i = 0; i < 10; i++) {
+      tenBids.push([String(65000 - i * 10) + '.0', '1.0', '1700000000.0']);
+      tenAsks.push([String(65001 + i * 10) + '.0', '1.0', '1700000000.0']);
+    }
+    conn._onMessage([42, { as: tenAsks, bs: tenBids }, 'book-10', 'XBT/USD']);
+
+    let errorCount = 0;
+    conn.on('error', () => { errorCount++; });  // must attach listener to avoid unhandled error
+
+    // Inject 5 consecutive mismatches
+    for (let i = 0; i < 5; i++) {
+      conn._onMessage([42, { a: [['65001.0', String(1.0 + i)]], c: String(i + 1000) }, 'book-10', 'XBT/USD']);
+    }
+
+    // reconnect should be scheduled once, and later mismatches must not storm
+    assert.strictEqual(reconnectCount, 1);
+    assert.strictEqual(errorCount, 1);  // one checksum mismatch routed via _handleSequenceGap
+    assert.strictEqual(conn.book.isEmpty(), true); // book cleared on resync
+  });
+
+  it('should NOT reset checksum cooldown on snapshot — prevents reconnect storm', () => {
+    const conn = new KrakenSpotConnectorAlias({});
+    conn._ws = { close: () => {} };
+    let reconnectCount = 0;
+    conn._scheduleReconnect = () => { reconnectCount++; };
+    conn._setState('running');
+
+    const tenBids = [];
+    const tenAsks = [];
+    for (let i = 0; i < 10; i++) {
+      tenBids.push([String(65000 - i * 10) + '.0', '1.0', '1700000000.0']);
+      tenAsks.push([String(65001 + i * 10) + '.0', '1.0', '1700000000.0']);
+    }
+
+    let errorCount = 0;
+    conn.on('error', () => { errorCount++; });
+
+    conn._onMessage([42, { as: tenAsks, bs: tenBids }, 'book-10', 'XBT/USD']);
+    conn._onMessage([42, { a: [['65001.0', '2.0']], c: '1' }, 'book-10', 'XBT/USD']);
+    assert.strictEqual(reconnectCount, 1);
+    assert.strictEqual(errorCount, 1);
+
+    // A fresh snapshot must NOT reset the mismatch cooldown — otherwise every
+    // reconnect would bypass the 30s suppression window and cause a reconnect storm.
+    conn._handleBookSnapshot({ as: tenAsks, bs: tenBids });
+    conn._onMessage([42, { a: [['65001.0', '3.0']], c: '2' }, 'book-10', 'XBT/USD']);
+    // Cooldown still active → mismatch suppressed → no additional reconnect
+    assert.strictEqual(reconnectCount, 1);
+    assert.strictEqual(errorCount, 1);
   });
 
   it('should fall back to the first REST depth key when pair key is missing', async () => {
@@ -383,6 +513,9 @@ describe('OkxConnector parser', () => {
       assert.strictEqual(emitted[0].side, 'buy');
       assert.strictEqual(emitted[1].side, 'sell');
       assert.strictEqual(emitted[0].tradeId, '111');
+      // qty = sz * contractValue (0.01 for perp): 1.2 * 0.01 = 0.012 BTC
+      assert.strictEqual(emitted[0].qty, 1.2 * 0.01);
+      assert.strictEqual(emitted[1].qty, 0.3 * 0.01);
     });
   });
 
@@ -901,5 +1034,65 @@ describe('Market alias connectors', () => {
     assert.strictEqual(okx.market, 'okx_spot');
     assert.strictEqual(okx.book.market, 'okx_spot');
     assert.ok(okx.restUrl.includes('instId=BTC-USDT'));
+  });
+
+  it('should emit OkxSpotConnector trade qty as base BTC (contractValue=1)', () => {
+    const okx = new OkxSpotConnector({});
+    okx._ws = null;
+    okx._setState('running');
+
+    const emitted = [];
+    okx.on('trade', (ev) => emitted.push(ev));
+    okx._handleTrade({
+      arg: { channel: 'trades', instId: 'BTC-USDT' },
+      data: [
+        { px: '65000', sz: '1.5', side: 'buy', ts: '1700000000000', tradeId: 's1' },
+        { px: '65001', sz: '0.8', side: 'sell', ts: '1700000000001', tradeId: 's2' },
+      ],
+    });
+
+    assert.strictEqual(emitted.length, 2);
+    // spot: contractValue=1, qty = sz * 1 = sz → base BTC
+    assert.strictEqual(emitted[0].qty, 1.5);
+    assert.strictEqual(emitted[1].qty, 0.8);
+    assert.strictEqual(emitted[0].market, 'okx_spot');
+  });
+
+  it('should emit BinanceCoinmPerpConnector trade qty as base BTC (contracts*100/price)', () => {
+    const coinm = new BinanceCoinmPerpConnector({});
+    coinm._ws = null;
+    coinm._setState('running');
+
+    const emitted = [];
+    coinm.on('trade', (ev) => emitted.push(ev));
+    coinm._handleTrade({ p: '65000', q: '20', m: false, T: 1700000000000, t: 123 }); // buy 20 contracts@65000
+    coinm._handleTrade({ p: '65000', q: '10', m: true, T: 1700000000001, t: 124 });  // sell 10 contracts@65000
+
+    assert.strictEqual(emitted.length, 2);
+    // COIN-M: qty = contracts * 100 / price
+    assert.strictEqual(emitted[0].qty, 20 * 100 / 65000); // ≈0.030769...
+    assert.strictEqual(emitted[0].side, 'buy');
+    assert.strictEqual(emitted[1].qty, 10 * 100 / 65000); // ≈0.015384...
+    assert.strictEqual(emitted[1].side, 'sell');
+    assert.strictEqual(emitted[1].tradeId, '124');
+  });
+
+  it('should skip BinanceCoinmPerpConnector trade when price or qty is zero', () => {
+    const coinm = new BinanceCoinmPerpConnector({});
+    coinm._ws = null;
+    coinm._setState('running');
+
+    const emitted = [];
+    coinm.on('trade', (ev) => emitted.push(ev));
+    coinm._handleTrade({ p: '0', q: '10', m: false, T: 1700000000000, t: 1 });
+    coinm._handleTrade({ p: '65000', q: '0', m: false, T: 1700000000001, t: 2 });
+
+    assert.strictEqual(emitted.length, 0);
+  });
+
+  it('should allow BinanceCoinmPerpConnector sync with empty ring buffer only for low-volume COIN-M', () => {
+    const coinm = new BinanceCoinmPerpConnector({});
+    coinm._ringBuf = [];
+    assert.ok(coinm._validateSync({ lastUpdateId: 100 }));
   });
 });

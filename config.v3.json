@@ -125,7 +125,7 @@
     "gemini_spot": {
       "enabled": true,
       "symbol": "BTC/USD",
-      "wsUrl": "wss://ws.gemini.com",
+      "wsUrl": "wss://api.gemini.com/v2/marketdata/",
       "restUrl": "",
       "depthLimit": 0
     },

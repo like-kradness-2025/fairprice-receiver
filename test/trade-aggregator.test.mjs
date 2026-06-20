@@ -2,7 +2,7 @@
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert';
-import { TradeAggregator } from '../lib/trade-aggregator.mjs';
+import { TradeAggregator, classifyTradeNotional } from '../lib/trade-aggregator.mjs';
 
 describe('TradeAggregator', () => {
   describe('constructor', () => {
@@ -123,6 +123,76 @@ describe('TradeAggregator', () => {
       assert.strictEqual(result.close, 102);
       assert.strictEqual(result.volume, 3);
       assert.strictEqual(result.trade_count, 2);
+    });
+  });
+
+  describe('classifyTradeNotional', () => {
+    it('should return small for notional < $1k', () => {
+      // $50 * 0.01 BTC = $0.5
+      assert.strictEqual(classifyTradeNotional(50, 0.01), 'small');
+      // $64000 * 0.01 BTC = $640
+      assert.strictEqual(classifyTradeNotional(64000, 0.01), 'small');
+      // boundary: $999.99
+      assert.strictEqual(classifyTradeNotional(1, 999.99), 'small');
+    });
+
+    it('should return medium for notional >= $1k and < $10k', () => {
+      // $64000 * 0.02 BTC = $1280
+      assert.strictEqual(classifyTradeNotional(64000, 0.02), 'medium');
+      // $64000 * 0.1 BTC = $6400
+      assert.strictEqual(classifyTradeNotional(64000, 0.1), 'medium');
+      // boundary: $1000
+      assert.strictEqual(classifyTradeNotional(1000, 1), 'medium');
+      // boundary: $9999.99
+      assert.strictEqual(classifyTradeNotional(9999.99, 1), 'medium');
+    });
+
+    it('should return large for notional >= $10k', () => {
+      // $64000 * 0.16 BTC = $10240
+      assert.strictEqual(classifyTradeNotional(64000, 0.16), 'large');
+      // $64000 * 1 BTC = $64000
+      assert.strictEqual(classifyTradeNotional(64000, 1), 'large');
+      // boundary: $10000
+      assert.strictEqual(classifyTradeNotional(10000, 1), 'large');
+    });
+  });
+
+  describe('size fields in aggregation output', () => {
+    it('should report small/medium/large counts and volumes', () => {
+      const agg = new TradeAggregator('test', 1000);
+      // small: $500 * 1 = $500 (< $1k)
+      agg.addTrade({ market: 'test', price: 500, qty: 1, side: 'buy', ts: 1000 });
+      // medium: $500 * 3 = $1500 ($1k-$10k)
+      agg.addTrade({ market: 'test', price: 500, qty: 3, side: 'sell', ts: 1100 });
+      // large: $10000 * 2 = $20000 (>= $10k)
+      agg.addTrade({ market: 'test', price: 10000, qty: 2, side: 'buy', ts: 1200 });
+      // medium: $2000 * 1 = $2000
+      agg.addTrade({ market: 'test', price: 2000, qty: 1, side: 'buy', ts: 1300 });
+
+      const result = agg.flushIfDue(2000);
+      assert.notStrictEqual(result, null);
+      // counts
+      assert.strictEqual(result.small_count, 1);
+      assert.strictEqual(result.medium_count, 2);
+      assert.strictEqual(result.large_count, 1);
+      // volumes
+      assert.strictEqual(result.small_volume, 1);
+      assert.strictEqual(result.medium_volume, 4); // 3 + 1
+      assert.strictEqual(result.large_volume, 2);
+      // total volume sanity check
+      assert.strictEqual(result.volume, 7);
+    });
+
+    it('should handle all-tiny window as all small', () => {
+      const agg = new TradeAggregator('test', 1000);
+      agg.addTrade({ market: 'test', price: 64000, qty: 0.005, side: 'buy', ts: 1000 });
+      agg.addTrade({ market: 'test', price: 64000, qty: 0.003, side: 'sell', ts: 1100 });
+      const result = agg.flushIfDue(2000);
+      // 64000 * 0.005 = $320, 64000 * 0.003 = $192 → both small
+      assert.strictEqual(result.small_count, 2);
+      assert.strictEqual(result.medium_count, 0);
+      assert.strictEqual(result.large_count, 0);
+      assert.strictEqual(result.small_volume, 0.008);
     });
   });
 });
