@@ -24,6 +24,8 @@ import { GeminiConnector } from './lib/gemini-connector.mjs';
 import { BitmexConnector } from './lib/bitmex-connector.mjs';
 import { HyperliquidConnector } from './lib/hyperliquid-connector.mjs';
 import { FairPriceCollector, createMarkPriceFetcher } from './lib/fair-price-collector.mjs';
+import { MarketDataCollector } from './lib/market-data-collector.mjs';
+import { BufferedWriter } from './lib/buffered-writer.mjs';
 
 function help() {
   console.log(`
@@ -97,6 +99,8 @@ const CONNECTOR_CLASSES = {
 
 const collectors = new Map();
 const connectors = new Map();
+const liquidationWriters = new Map();
+let marketDataCollector = null;
 const STARTUP_STAGGER_MS = 50;
 const STARTUP_MARKETS = enabledMarkets.filter(m => m !== 'binance_perp');
 if (enabledMarkets.includes('binance_perp')) STARTUP_MARKETS.push('binance_perp');
@@ -122,12 +126,22 @@ async function startConnector(market) {
     markPriceFetcher,
   });
 
+  // Liquidation writer
+  liquidationWriters.set(market, new BufferedWriter(
+    path.join(outputBase, 'liquidations', `${market}.jsonl`),
+    { flushIntervalMs: 200 }
+  ));
+
   connector.on('error', ({ message }) => {
     console.error(`[${market}] error: ${message}`);
   });
 
   connector.on('stateChange', (from, to) => {
     console.log(`[${market}] state: ${from} → ${to}`);
+  });
+
+  connector.on('liquidation', async (row) => {
+    liquidationWriters.get(market)?.write(row);
   });
 
   try {
@@ -149,6 +163,30 @@ async function main() {
   });
   collectors.set('main', collector);
 
+  // Output directories for additional data
+  for (const dir of ['liquidations', 'ohlcv', 'ticker', 'lsratio', 'takervol', 'premium']) {
+    fs.mkdirSync(path.join(outputBase, dir), { recursive: true });
+  }
+
+  // Market data collector (OHLCV, ticker, LS ratio, taker vol, premium)
+  marketDataCollector = new MarketDataCollector(outputBase, {
+    intervalMs: config.tick?.market_data_ms ?? 60000,
+  });
+  for (const market of enabledMarkets) {
+    const mCfg = config.markets[market];
+    const type = market.includes('perp') ? 'perp' : 'spot';
+    const md = mCfg.marketData;
+    if (!md) continue;
+    marketDataCollector.registerMarket(market, {
+      type,
+      urls: { ohlcv: md.ohlcv, ticker: md.ticker, lsratio: md.lsratio, takervol: md.takervol },
+      collect: { lsratio: !!md.lsratio, takervol: !!md.takervol },
+    });
+  }
+  // Coinbase premium is computed automatically if both coinbase_spot and binance_spot tickers are collected
+  marketDataCollector.registerPremium();
+  marketDataCollector.start();
+
   for (const [index, market] of STARTUP_MARKETS.entries()) {
     if (index > 0) await sleep(STARTUP_STAGGER_MS);
     await startConnector(market);
@@ -158,10 +196,15 @@ async function main() {
 
   const shutdown = async () => {
     console.log('[fairprice] shutting down...');
+    if (marketDataCollector) await marketDataCollector.close();
     for (const [, conn] of connectors) {
       conn.disconnect();
     }
     await collector.close();
+    // Flush liquidation writers
+    const promises = [];
+    for (const [, w] of liquidationWriters) promises.push(w.close());
+    await Promise.allSettled(promises);
     console.log('[fairprice] shutdown complete');
     process.exit(0);
   };

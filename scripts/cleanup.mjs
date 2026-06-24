@@ -20,7 +20,7 @@ const RETENTION = {
   fairprice: 86400,  // 1 day
 };
 const AGG_DB = 'data/parquet/1s_agg.db';
-const AGG_RETENTION_MS = 30 * 86400 * 1000; // 30 days
+const AGG_RETENTION_MS = 7 * 86400 * 1000; // 7 days
 
 function listMarkets(cat) {
   const dir = path.join(BASE, cat);
@@ -76,7 +76,7 @@ async function main() {
   if (fs.existsSync(AGG_DB)) {
     const db = new duckdb.Database(AGG_DB);
     try {
-      const deleteCutoff = now - AGG_RETENTION_DAYS * 86400 * 1000;
+      const deleteCutoff = now - AGG_RETENTION_MS;
       const countBefore = await new Promise((resolve, reject) => {
         db.all(`SELECT count(*)::varchar as cnt FROM agg_1s`, (err, rows) =>
           err ? reject(err) : resolve(parseInt(rows[0]?.cnt || '0', 10))

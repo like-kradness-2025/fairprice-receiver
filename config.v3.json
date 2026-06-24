@@ -153,7 +153,7 @@
     "bitmex_perp": {
       "enabled": true,
       "symbol": "XBTUSD",
-      "wsUrl": "wss://ws.bitmex.com/realtime?subscribe=trade:XBTUSD",
+      "wsUrl": "wss://ws.bitmex.com/realtime?subscribe=trade:XBTUSD,orderBookL2:XBTUSD",
       "restUrl": "",
       "depthLimit": 0
     },

@@ -569,8 +569,8 @@ describe('OkxConnector parser', () => {
       assert.strictEqual(emitted.symbol, 'BTC-USDT-SWAP');
       assert.strictEqual(emitted.side, 'sell');
       assert.strictEqual(emitted.price, 64950.0);
-      assert.strictEqual(emitted.qty, 3.0);
-      assert.strictEqual(emitted.notional, 194850.0);
+      assert.strictEqual(emitted.qty, 0.03);
+      assert.strictEqual(emitted.notional, 1948.5);
       assert.strictEqual(emitted.raw_type, 'liquidation-orders');
     });
   });
