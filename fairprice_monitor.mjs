@@ -69,7 +69,7 @@ try {
   process.exit(1);
 }
 
-const outputBase = arg('output', config.output?.fairprice_base_path ?? 'data/live_fairprice');
+const outputBase = arg('output', config.output?.fairprice_base_path ?? 'data/raw_hot');
 const seconds = parseInt(arg('seconds', '0'), 10);
 const marketsArg = arg('markets', '');
 const enabledMarkets = marketsArg

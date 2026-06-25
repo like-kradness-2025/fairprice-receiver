@@ -9,10 +9,36 @@ import duckdb from 'duckdb';
 import fs from 'node:fs';
 import path from 'node:path';
 
-const TRADE_DIR = 'data/live_fairprice/trades';
-const BOOK_DIR = 'data/live_fairprice/book';
+const RAW_HOT_BASE = 'data/raw_hot';
 const AGG_DIR = 'data/agg';
 const LOOKBACK_MS = 120_000;
+
+/** Current UTC date partition string */
+function currentDatePartition() {
+  const d = new Date();
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(d.getUTCDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+/** Resolve data path: check today's partition, fall back to yesterday.
+ *  For midnight overlap, returns today's path; the caller's SQL query
+ *  uses WHERE ts >= cutoff so it naturally picks up the tail of yesterday
+ *  if today's file starts late. */
+function resolvePath(stream, market) {
+  const today = currentDatePartition();
+  const p = path.join(RAW_HOT_BASE, today, stream, `${market}.jsonl`);
+  if (fs.existsSync(p)) return p;
+  // Fall back to yesterday (midnight boundary, first agg run of the day)
+  const y = new Date(Date.now() - 86400000);
+  const ym = String(y.getUTCMonth() + 1).padStart(2, '0');
+  const yd = String(y.getUTCDate()).padStart(2, '0');
+  const yesterday = `${y.getUTCFullYear()}-${ym}-${yd}`;
+  const py = path.join(RAW_HOT_BASE, yesterday, stream, `${market}.jsonl`);
+  if (fs.existsSync(py)) return py;
+  return p; // return today's path even if missing (caller handles)
+}
 
 // -- helpers -----------------------------------------------------------
 
@@ -157,8 +183,8 @@ function computeBookFeatures(bookSnaps, winTs) {
 async function processMarket(market, cutoff) {
   const mn = safeMarket(market);
   const mtype = marketType(market);
-  const tradePath = path.join(TRADE_DIR, `${market}.jsonl`);
-  const bookPath = path.join(BOOK_DIR, `${market}.jsonl`);
+  const tradePath = resolvePath('trade', market);
+  const bookPath = resolvePath('snapshot', market);
   const outPath = path.join(AGG_DIR, `${market}.parquet`);
 
   // Skip if no trade data
@@ -314,7 +340,9 @@ async function main() {
   fs.mkdirSync(AGG_DIR, { recursive: true });
 
   // List markets from trade directory
-  const tradeFiles = fs.readdirSync(TRADE_DIR).filter(f => f.endsWith('.jsonl'));
+  const tradeDir = path.join(RAW_HOT_BASE, currentDatePartition(), 'trade');
+  let tradeFiles = [];
+  try { tradeFiles = fs.readdirSync(tradeDir).filter(f => f.endsWith('.jsonl')); } catch {}
   const markets = tradeFiles.map(f => f.replace('.jsonl', ''));
 
   let totalRows = 0;

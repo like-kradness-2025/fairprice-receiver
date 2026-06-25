@@ -189,7 +189,7 @@
   },
   "tick": {
     "feature_ms": 1000,
-    "book_snapshot_ms": 30000,
+    "book_snapshot_ms": 600000,
     "market_data_ms": 60000
   }
 }
